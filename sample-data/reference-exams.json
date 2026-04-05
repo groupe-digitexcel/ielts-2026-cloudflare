@@ -1,0 +1,59 @@
+[
+  {
+    "title": "IELTS Academic Health Sector Set 1",
+    "domain": "healthcare",
+    "sections": {
+      "listening": {
+        "title": "Hospital Orientation Audio",
+        "questions": [
+          { "id": 1, "type": "mcq", "question": "What floor is radiology on?", "options": ["1st", "2nd", "3rd", "4th"], "answer": "2nd" },
+          { "id": 2, "type": "mcq", "question": "What time does the consultation start?", "options": ["8:00", "9:00", "10:00", "11:00"], "answer": "9:00" }
+        ]
+      },
+      "reading": {
+        "title": "Public Health Awareness",
+        "passage": "Community health workers play a critical role in vaccination outreach and patient education...",
+        "questions": [
+          { "id": 1, "type": "mcq", "question": "What is a key role of community health workers?", "options": ["Surgery", "Vaccination outreach", "Laboratory manufacturing", "Architecture"], "answer": "Vaccination outreach" }
+        ]
+      },
+      "writing": {
+        "task1": "The chart shows vaccination rates in 5 districts from 2020 to 2025. Summarize the main trends.",
+        "task2": "Some people believe public healthcare should be completely free. To what extent do you agree or disagree?"
+      },
+      "speaking": {
+        "part1": ["Describe your experience visiting a hospital or clinic."],
+        "part2": "Describe a time when you helped someone improve their health.",
+        "part3": ["Why is preventive healthcare important?"]
+      }
+    }
+  },
+  {
+    "title": "IELTS General Business & Trade Set 1",
+    "domain": "business",
+    "sections": {
+      "listening": {
+        "title": "Office Recruitment Call",
+        "questions": [
+          { "id": 1, "type": "mcq", "question": "What position is available?", "options": ["Sales officer", "Teacher", "Pilot", "Nurse"], "answer": "Sales officer" }
+        ]
+      },
+      "reading": {
+        "title": "Import and Export Basics",
+        "passage": "International trade requires compliance, documentation, and efficient logistics planning...",
+        "questions": [
+          { "id": 1, "type": "mcq", "question": "What is important in international trade?", "options": ["Randomness", "Documentation", "Silence", "No planning"], "answer": "Documentation" }
+        ]
+      },
+      "writing": {
+        "task1": "Write a letter to a supplier about a delayed shipment.",
+        "task2": "Some believe entrepreneurship should be taught in all schools. Discuss both views and give your opinion."
+      },
+      "speaking": {
+        "part1": ["What type of work environment do you prefer?"],
+        "part2": "Describe a successful businessperson you admire.",
+        "part3": ["How has technology changed business communication?"]
+      }
+    }
+  }
+]
