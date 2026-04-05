@@ -1,0 +1,49 @@
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password TEXT NOT NULL,
+  role TEXT DEFAULT 'student',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS exams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  exam_type TEXT NOT NULL, -- full, reading, listening, writing, speaking
+  source TEXT DEFAULT 'ai',
+  difficulty TEXT DEFAULT 'medium',
+  payload TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  exam_id INTEGER NOT NULL,
+  section TEXT NOT NULL,
+  answers TEXT NOT NULL,
+  score REAL DEFAULT 0,
+  band_score REAL DEFAULT 0,
+  feedback TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  plan_name TEXT NOT NULL,
+  status TEXT DEFAULT 'active',
+  amount REAL DEFAULT 0,
+  expires_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS uploaded_audio (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  exam_id INTEGER,
+  file_key TEXT NOT NULL,
+  file_url TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
