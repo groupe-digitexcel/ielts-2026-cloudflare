@@ -1,227 +1,523 @@
-import { Hono } from "hono";
-
-type Bindings = {
-  DB: D1Database;
-  UPLOADS: R2Bucket;
-  ASSETS: Fetcher;
-  APP_NAME: string;
-  ADMIN_EMAIL: string;
-  AI_PROVIDER: string;
-  AI_API_KEY: string;
-};
-
-const app = new Hono<{ Bindings: Bindings }>();
-
-// ----------------------
-// Helper functions
-// ----------------------
-function estimateBandFromScore(score: number) {
-  if (score >= 95) return 9.0;
-  if (score >= 88) return 8.5;
-  if (score >= 80) return 8.0;
-  if (score >= 73) return 7.5;
-  if (score >= 65) return 7.0;
-  if (score >= 58) return 6.5;
-  if (score >= 50) return 6.0;
-  if (score >= 43) return 5.5;
-  if (score >= 35) return 5.0;
-  return 4.5;
+export interface Env {
+  IELTS2026AI_DB: D1Database;
+  CACHE: KVNamespace;
+  REFERENCE_EXAMS: R2Bucket;
 }
 
-function autoEvaluateWriting(answer: string) {
-  const words = answer.trim().split(/\s+/).filter(Boolean).length;
-  const chars = answer.trim().length;
+type GeneratePayload = {
+  domain: string;
+  examType: string;
+  difficulty: string;
+};
 
-  let score = 40;
+type SubmitPayload = {
+  examId: number;
+  userId: string;
+  answers: Record<string, string>;
+};
 
-  if (words >= 250) score += 20;
-  else if (words >= 180) score += 12;
-  else score -= 8;
+type PaymentPayload = {
+  userId: string;
+  amount: number;
+  method: "LOCAL" | "VISA";
+  accountNumber?: string;
+};
 
-  if (chars > 1200) score += 10;
-  if (/\bhowever\b|\btherefore\b|\bmoreover\b|\bin conclusion\b/i.test(answer)) score += 10;
-  if (/\bfor example\b|\bfor instance\b/i.test(answer)) score += 8;
-  if (/[.!?]/.test(answer)) score += 5;
-  if (answer.split(".").length > 6) score += 7;
+const DEFAULT_DOMAINS = [
+  "business",
+  "healthcare",
+  "education",
+  "construction",
+  "technology",
+  "logistics",
+  "hospitality",
+  "banking",
+  "civil-engineering",
+  "public-services"
+];
 
-  if (score > 100) score = 100;
-  if (score < 0) score = 0;
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
 
-  const band = estimateBandFromScore(score);
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders() });
+    }
 
-  let feedback = "Your essay shows potential but needs improvement in task response, coherence, lexical resource, and grammar.";
-  if (band >= 7.5) {
-    feedback = "Strong IELTS-style essay. Good structure, adequate development of ideas, and strong coherence. Continue refining grammar precision and advanced vocabulary.";
-  } else if (band >= 6.5) {
-    feedback = "Good performance. Improve idea extension, paragraph linking, and more precise vocabulary for a higher band.";
-  } else if (band >= 5.5) {
-    feedback = "Moderate performance. You need stronger structure, more examples, better connectors, and clearer grammar control.";
+    try {
+      // Health
+      if (url.pathname === "/api/health") {
+        return json({ ok: true, service: "groupe-digitexcel IELTS 2026 API" });
+      }
+
+      // Domains
+      if (url.pathname === "/api/domains" && request.method === "GET") {
+        const cached = await env.CACHE.get("domains");
+        if (cached) return json(JSON.parse(cached));
+
+        await env.CACHE.put("domains", JSON.stringify(DEFAULT_DOMAINS), { expirationTtl: 3600 });
+        return json(DEFAULT_DOMAINS);
+      }
+
+      // Generate Exam
+      if (url.pathname === "/api/generate-exam" && request.method === "POST") {
+        const body = (await request.json()) as GeneratePayload;
+        const exam = await generateExamFromReferences(body, env);
+        return json(exam);
+      }
+
+      // Submit Result
+      if (url.pathname === "/api/submit-result" && request.method === "POST") {
+        const body = (await request.json()) as SubmitPayload;
+        const result = await autoEvaluate(body, env);
+        return json(result);
+      }
+
+      // Upload reference set
+      if (url.pathname === "/api/admin/upload" && request.method === "POST") {
+        const body = await request.json();
+        const result = await uploadReferenceSet(body, env);
+        return json(result);
+      }
+
+      // Get reference sets
+      if (url.pathname === "/api/admin/reference-sets" && request.method === "GET") {
+        const cached = await env.CACHE.get("reference_sets");
+        if (cached) return json(JSON.parse(cached));
+
+        const rows = await env.IELTS2026AI_DB
+          .prepare(`SELECT * FROM exam_reference_sets ORDER BY id DESC`)
+          .all();
+
+        const results = rows.results || [];
+        await env.CACHE.put("reference_sets", JSON.stringify(results), { expirationTtl: 120 });
+        return json(results);
+      }
+
+      // Seed sample references from JSON manually through API if needed
+      if (url.pathname === "/api/admin/seed-samples" && request.method === "POST") {
+        const body = await request.json();
+        const samples = Array.isArray(body) ? body : [];
+        const created: number[] = [];
+
+        for (const item of samples) {
+          const res = await uploadReferenceSet({
+            title: item.title,
+            domain: item.domain,
+            sections: item.sections
+          }, env);
+          created.push(res.referenceSetId);
+        }
+
+        return json({ success: true, created });
+      }
+
+      // Payments
+      if (url.pathname === "/api/payments/create" && request.method === "POST") {
+        const body = (await request.json()) as PaymentPayload;
+        const payment = await createPayment(body, env);
+        return json(payment);
+      }
+
+      return json({ error: "Not found" }, 404);
+    } catch (error: any) {
+      return json({ error: error?.message || "Internal error" }, 500);
+    }
+  }
+};
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+}
+
+function json(data: any, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders()
+    }
+  });
+}
+
+async function uploadReferenceSet(body: any, env: Env) {
+  const { title, domain, sections } = body;
+
+  if (!title || !domain || !sections) {
+    throw new Error("title, domain and sections are required");
   }
 
+  const r2Key = `reference/${Date.now()}-${slugify(title)}.json`;
+  await env.REFERENCE_EXAMS.put(r2Key, JSON.stringify(sections, null, 2), {
+    httpMetadata: { contentType: "application/json" }
+  });
+
+  const refInsert = await env.IELTS2026AI_DB
+    .prepare(`
+      INSERT INTO exam_reference_sets (title, domain, source_type, r2_key)
+      VALUES (?, ?, 'admin_upload', ?)
+    `)
+    .bind(title, domain, r2Key)
+    .run();
+
+  const referenceSetId = Number(refInsert.meta.last_row_id);
+
+  for (const sectionType of ["listening", "reading", "writing", "speaking"]) {
+    if (sections[sectionType]) {
+      await env.IELTS2026AI_DB
+        .prepare(`
+          INSERT INTO exam_reference_sections (reference_set_id, section_type, content)
+          VALUES (?, ?, ?)
+        `)
+        .bind(referenceSetId, sectionType, JSON.stringify(sections[sectionType]))
+        .run();
+    }
+  }
+
+  await env.CACHE.delete("reference_sets");
+
   return {
-    score,
-    band_score: band,
+    success: true,
+    referenceSetId,
+    r2Key
+  };
+}
+
+async function generateExamFromReferences(payload: GeneratePayload, env: Env) {
+  const domain = payload.domain || "business";
+  const examType = payload.examType || "full";
+  const difficulty = payload.difficulty || "mixed";
+
+  const refs = await env.IELTS2026AI_DB
+    .prepare(`
+      SELECT * FROM exam_reference_sets
+      WHERE domain = ?
+      ORDER BY id DESC
+      LIMIT 3
+    `)
+    .bind(domain)
+    .all();
+
+  let baseSections: any = null;
+  let basedOnRefs: number[] = [];
+
+  if ((refs.results || []).length > 0) {
+    const ref = refs.results[0] as any;
+    basedOnRefs = (refs.results || []).map((r: any) => Number(r.id));
+
+    const r2Obj = await env.REFERENCE_EXAMS.get(ref.r2_key);
+    if (r2Obj) {
+      const text = await r2Obj.text();
+      baseSections = JSON.parse(text);
+    }
+  }
+
+  const generatedSections = buildGeneratedSections(domain, difficulty, baseSections);
+
+  const title = `IELTS 2026 ${capitalize(domain)} ${capitalize(examType)} ${capitalize(difficulty)} Exam`;
+
+  const insert = await env.IELTS2026AI_DB
+    .prepare(`
+      INSERT INTO exams (title, domain, exam_type, difficulty, sections)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+    .bind(title, domain, examType, difficulty, JSON.stringify(generatedSections))
+    .run();
+
+  const examId = Number(insert.meta.last_row_id);
+
+  await env.IELTS2026AI_DB
+    .prepare(`
+      INSERT INTO generated_exam_lineage (exam_id, based_on_references, generation_prompt)
+      VALUES (?, ?, ?)
+    `)
+    .bind(
+      examId,
+      JSON.stringify(basedOnRefs),
+      `Generated from domain=${domain}, examType=${examType}, difficulty=${difficulty}`
+    )
+    .run();
+
+  return {
+    id: examId,
+    title,
+    domain,
+    exam_type: examType,
+    difficulty,
+    sections: generatedSections
+  };
+}
+
+function buildGeneratedSections(domain: string, difficulty: string, baseSections: any) {
+  const domainTopic = getDomainTopic(domain);
+  const diffWord = difficulty === "hard" ? "advanced" : difficulty === "easy" ? "accessible" : "balanced";
+
+  const listeningBase = baseSections?.listening;
+  const readingBase = baseSections?.reading;
+  const writingBase = baseSections?.writing;
+  const speakingBase = baseSections?.speaking;
+
+  return {
+    listening: {
+      title: listeningBase?.title || `${capitalize(domain)} Listening Practice`,
+      questions: listeningBase?.questions?.length
+        ? listeningBase.questions.map((q: any, idx: number) => ({
+            id: idx + 1,
+            type: "mcq",
+            question: `${q.question} (${diffWord} variant)`,
+            options: q.options,
+            answer: q.answer
+          }))
+        : [
+            {
+              id: 1,
+              type: "mcq",
+              question: `In a ${domainTopic} orientation, what is the first priority?`,
+              options: ["Safety", "Decoration", "Silence", "Delay"],
+              answer: "Safety"
+            },
+            {
+              id: 2,
+              type: "mcq",
+              question: `What is essential in a ${domainTopic} workflow?`,
+              options: ["Documentation", "Guesswork", "Confusion", "No plan"],
+              answer: "Documentation"
+            }
+          ]
+    },
+
+    reading: {
+      title: readingBase?.title || `${capitalize(domain)} Reading Passage`,
+      passage:
+        readingBase?.passage ||
+        `${capitalize(domainTopic)} professionals often work in ${diffWord} and realistic environments where communication, planning, and problem-solving are essential. This passage simulates IELTS-style comprehension with practical and academic relevance.`,
+      questions: readingBase?.questions?.length
+        ? readingBase.questions.map((q: any, idx: number) => ({
+            id: idx + 1,
+            type: "mcq",
+            question: `${q.question} (${diffWord} interpretation)`,
+            options: q.options,
+            answer: q.answer
+          }))
+        : [
+            {
+              id: 1,
+              type: "mcq",
+              question: `What is emphasized in the passage about ${domainTopic}?`,
+              options: ["Planning", "Disorder", "Isolation", "Silence"],
+              answer: "Planning"
+            }
+          ]
+    },
+
+    writing: {
+      task1:
+        writingBase?.task1 ||
+        `The graph shows performance trends in the ${domainTopic} sector over five years. Summarize the key features and compare significant changes.`,
+      task2:
+        writingBase?.task2 ||
+        `Some people believe that ${domainTopic} skills should be taught earlier in schools and training centers. Discuss both views and give your own opinion.`
+    },
+
+    speaking: {
+      part1:
+        speakingBase?.part1 || [
+          `What interests you most about ${domainTopic}?`,
+          `Have you ever learned about ${domainTopic} in real life?`
+        ],
+      part2:
+        speakingBase?.part2 ||
+        `Describe a time when you observed or participated in a ${domainTopic} situation that taught you something important.`,
+      part3:
+        speakingBase?.part3 || [
+          `Why is communication important in ${domainTopic}?`,
+          `How might technology improve ${domainTopic} in the future?`
+        ]
+    }
+  };
+}
+
+function getDomainTopic(domain: string) {
+  const map: Record<string, string> = {
+    business: "business and trade",
+    healthcare: "healthcare and clinical support",
+    education: "education and learning",
+    construction: "construction and site operations",
+    technology: "technology and digital systems",
+    logistics: "logistics and supply chain",
+    hospitality: "hospitality and customer service",
+    banking: "banking and finance",
+    "civil-engineering": "civil engineering and infrastructure",
+    "public-services": "public administration and public services"
+  };
+
+  return map[domain] || domain;
+}
+
+async function autoEvaluate(payload: SubmitPayload, env: Env) {
+  const examRow = await env.IELTS2026AI_DB
+    .prepare(`SELECT * FROM exams WHERE id = ?`)
+    .bind(payload.examId)
+    .first<any>();
+
+  if (!examRow) throw new Error("Exam not found");
+
+  const sections = JSON.parse(examRow.sections);
+
+  let listeningScore = 0;
+  let readingScore = 0;
+
+  for (const q of sections.listening.questions || []) {
+    const key = `listening-${q.id}`;
+    if (payload.answers[key] === q.answer) listeningScore++;
+  }
+
+  for (const q of sections.reading.questions || []) {
+    const key = `reading-${q.id}`;
+    if (payload.answers[key] === q.answer) readingScore++;
+  }
+
+  const writingTask1 = payload.answers["writing-task1"] || "";
+  const writingTask2 = payload.answers["writing-task2"] || "";
+
+  const writingBand = estimateWritingBand(writingTask1, writingTask2);
+  const speakingBand = 6.5; // Placeholder until real speech/voice integration later
+
+  const objectiveBandListening = mapObjectiveToBand(listeningScore, (sections.listening.questions || []).length || 1);
+  const objectiveBandReading = mapObjectiveToBand(readingScore, (sections.reading.questions || []).length || 1);
+
+  const overallBand = roundToHalf(
+    (objectiveBandListening + objectiveBandReading + writingBand + speakingBand) / 4
+  );
+
+  const feedback = buildFeedback({
+    listeningScore,
+    readingScore,
+    writingBand,
+    speakingBand,
+    overallBand
+  });
+
+  await env.IELTS2026AI_DB
+    .prepare(`
+      INSERT INTO exam_attempts (exam_id, user_id, answers, score, band_overall)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+    .bind(
+      payload.examId,
+      payload.userId,
+      JSON.stringify(payload.answers),
+      JSON.stringify({
+        listeningScore,
+        readingScore,
+        writingBand,
+        speakingBand,
+        overallBand
+      }),
+      overallBand
+    )
+    .run();
+
+  return {
+    examId: payload.examId,
+    listeningScore,
+    readingScore,
+    writingBand,
+    speakingBand,
+    overallBand,
     feedback
   };
 }
 
-function buildExam(examType: string, difficulty: string) {
-  const reading = {
-    passage:
-      "The development of artificial intelligence in education has transformed how students prepare for standardized exams, especially through adaptive learning, instant feedback, and realistic exam simulation.",
-    questions: [
-      { question: "What has transformed exam preparation according to the passage?" },
-      { question: "Name two benefits of AI in standardized exam preparation." },
-      { question: "What kind of feedback is mentioned in the passage?" }
-    ]
-  };
+function estimateWritingBand(task1: string, task2: string) {
+  const totalWords = countWords(task1) + countWords(task2);
 
-  const listening = {
-    audioScript:
-      "You will hear a conversation between a student and an IELTS instructor discussing strategies for improving band scores in the writing section.",
-    questions: [
-      { question: "Who are the speakers in the conversation?" },
-      { question: "Which IELTS section are they discussing?" }
-    ]
-  };
+  if (totalWords >= 500) return 7.5;
+  if (totalWords >= 350) return 6.5;
+  if (totalWords >= 220) return 5.5;
+  return 4.5;
+}
 
-  const writing = {
-    task1: {
-      question:
-        "The chart below shows the percentage of students using online platforms for IELTS preparation between 2022 and 2026. Summarize the information by selecting and reporting the main features."
-    },
-    task2: {
-      question:
-        "Some people believe that AI-based learning tools are the best way to prepare for language proficiency tests such as IELTS. To what extent do you agree or disagree?"
-    }
-  };
+function countWords(text: string) {
+  return text.trim() ? text.trim().split(/\s+/).length : 0;
+}
 
-  const speaking = {
-    part1: [
-      "Do you enjoy studying English?",
-      "How often do you practice speaking English?"
-    ],
-    part2: "Describe a time when technology helped you learn something important.",
-    part3: [
-      "Do you think AI will replace teachers in the future?",
-      "What are the risks of relying too much on technology for education?"
-    ]
-  };
+function mapObjectiveToBand(score: number, total: number) {
+  const ratio = total > 0 ? score / total : 0;
+  if (ratio >= 0.95) return 9;
+  if (ratio >= 0.85) return 8;
+  if (ratio >= 0.75) return 7;
+  if (ratio >= 0.6) return 6;
+  if (ratio >= 0.45) return 5;
+  if (ratio >= 0.3) return 4;
+  return 3;
+}
 
-  const payload =
-    examType === "reading"
-      ? { reading }
-      : examType === "listening"
-      ? { listening }
-      : examType === "writing"
-      ? { writing }
-      : examType === "speaking"
-      ? { speaking }
-      : { reading, listening, writing, speaking };
+function roundToHalf(n: number) {
+  return Math.round(n * 2) / 2;
+}
+
+function buildFeedback(data: {
+  listeningScore: number;
+  readingScore: number;
+  writingBand: number;
+  speakingBand: number;
+  overallBand: number;
+}) {
+  return `Listening: ${data.listeningScore}, Reading: ${data.readingScore}. Estimated Writing Band: ${data.writingBand}. Speaking provisional band: ${data.speakingBand}. Overall estimated IELTS band: ${data.overallBand}. Improve vocabulary range, coherence, and timing for stronger performance.`;
+}
+
+async function createPayment(payload: PaymentPayload, env: Env) {
+  const metadata =
+    payload.method === "LOCAL"
+      ? {
+          instructions: [
+            "Send payment using local mobile money / local transfer",
+            "Admin can later verify manually",
+            "Future automation can be added"
+          ]
+        }
+      : {
+          instructions: [
+            "Visa / Grey placeholder created",
+            "Later connect Grey virtual US bank account",
+            "Later connect card or ACH flow"
+          ]
+        };
+
+  const insert = await env.IELTS2026AI_DB
+    .prepare(`
+      INSERT INTO payments (user_id, amount, method, account_number, status, metadata)
+      VALUES (?, ?, ?, ?, 'pending', ?)
+    `)
+    .bind(
+      payload.userId,
+      payload.amount,
+      payload.method,
+      payload.accountNumber || "",
+      JSON.stringify(metadata)
+    )
+    .run();
 
   return {
-    title: `IELTS 2026 ${examType.toUpperCase()} Simulation (${difficulty})`,
-    exam_type: examType,
-    difficulty,
-    payload
+    success: true,
+    paymentId: Number(insert.meta.last_row_id),
+    message:
+      payload.method === "LOCAL"
+        ? "Local payment request created successfully"
+        : "Visa / Grey placeholder payment request created successfully",
+    metadata
   };
 }
 
-// ----------------------
-// API routes
-// ----------------------
-app.get("/api/health", (c) => {
-  return c.json({
-    ok: true,
-    message: "Cloudflare fullstack backend is running"
-  });
-});
+function slugify(input: string) {
+  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
 
-app.post("/api/exams/generate", async (c) => {
-  const body = await c.req.json<{ examType: string; difficulty: string }>();
-  const examType = body.examType || "full";
-  const difficulty = body.difficulty || "medium";
-
-  const exam = buildExam(examType, difficulty);
-
-  const result = await c.env.DB.prepare(
-    "INSERT INTO exams (title, exam_type, difficulty, payload, source) VALUES (?, ?, ?, ?, ?)"
-  )
-    .bind(
-      exam.title,
-      exam.exam_type,
-      exam.difficulty,
-      JSON.stringify(exam.payload),
-      "ai"
-    )
-    .run();
-
-  return c.json({
-    success: true,
-    exam: {
-      id: result.meta.last_row_id,
-      ...exam
-    }
-  });
-});
-
-app.post("/api/evaluate/writing", async (c) => {
-  const body = await c.req.json<{ question: string; answer: string }>();
-  const result = autoEvaluateWriting(body.answer || "");
-
-  return c.json({
-    success: true,
-    result
-  });
-});
-
-app.get("/api/exams", async (c) => {
-  const rows = await c.env.DB.prepare(
-    "SELECT id, title, exam_type, difficulty, source, created_at FROM exams ORDER BY id DESC LIMIT 20"
-  ).all();
-
-  return c.json({
-    success: true,
-    exams: rows.results || []
-  });
-});
-
-app.post("/api/attempts/save", async (c) => {
-  const body = await c.req.json<{
-    user_id: number;
-    exam_id: number;
-    section: string;
-    answers: any;
-    score: number;
-    band_score: number;
-    feedback?: string;
-  }>();
-
-  const result = await c.env.DB.prepare(
-    "INSERT INTO attempts (user_id, exam_id, section, answers, score, band_score, feedback) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  )
-    .bind(
-      body.user_id,
-      body.exam_id,
-      body.section,
-      JSON.stringify(body.answers || {}),
-      body.score || 0,
-      body.band_score || 0,
-      body.feedback || ""
-    )
-    .run();
-
-  return c.json({
-    success: true,
-    id: result.meta.last_row_id
-  });
-});
-
-// ----------------------
-// Static frontend fallback
-// ----------------------
-app.all("*", async (c) => {
-  return c.env.ASSETS.fetch(c.req.raw);
-});
-
-export default app;
+function capitalize(text: string) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
