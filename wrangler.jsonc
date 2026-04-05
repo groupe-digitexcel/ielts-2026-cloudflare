@@ -1,36 +1,27 @@
 {
-  "name": "ielts-2026-cloudflare-fullstack",
+  "name": "groupe-digitexcel",
   "main": "worker/index.ts",
-  "compatibility_date": "2026-04-04",
-
-  "assets": {
-    "directory": "./dist",
-    "binding": "ASSETS"
-  },
+  "compatibility_date": "2026-04-05",
 
   "d1_databases": [
     {
-      "binding": "DB",
-      "database_name": "ielts-2026-db",
-      "database_id": "PUT_YOUR_D1_DATABASE_ID_HERE"
+      "binding": "IELTS2026AI_DB",
+      "database_name": "ielts2026ai-db",
+      "database_id": "REPLACE_WITH_YOUR_REAL_D1_DATABASE_ID"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_YOUR_REAL_KV_NAMESPACE_ID"
     }
   ],
 
   "r2_buckets": [
     {
-      "binding": "UPLOADS",
-      "bucket_name": "ielts-2026-uploads"
+      "binding": "REFERENCE_EXAMS",
+      "bucket_name": "groupe-digitexcel-exam-references"
     }
-  ],
-
-  "vars": {
-    "APP_NAME": "IELTS 2026 Version Format Exams Simulator",
-    "ADMIN_EMAIL": "admin@example.com",
-    "AI_PROVIDER": "mock",
-    "AI_API_KEY": "REPLACE_ME"
-  },
-
-  "observability": {
-    "enabled": true
-  }
+  ]
 }
